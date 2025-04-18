@@ -1,0 +1,198 @@
+//@version=5
+indicator(title='VuManChu Pro++ Enhanced', shorttitle='VMC Pro++', overlay=false, precision=2)
+
+// ================================
+// 1. INPUT PARAMETERS
+// ================================
+
+// Core Settings
+enableHA = input.bool(true, "Enable Heikin Ashi Mode", group="Core Settings")
+darkMode = input.bool(true, "Dark Mode", group="Core Settings")
+useAITuning = input.bool(true, "Enable AI Optimization", group="Core Settings")
+
+// WaveTrend Settings
+wtShow = input.bool(true, "Show WaveTrend", group="WaveTrend Settings")
+wtChannelLen = input.int(9, "WT Channel Length", minval=5, maxval=20, group="WaveTrend Settings")
+wtAverageLen = input.int(12, "WT Average Length", minval=5, maxval=50, group="WaveTrend Settings")
+wtMALen = input.int(3, "WT MA Length", minval=1, maxval=10, group="WaveTrend Settings")
+
+// Dynamic OB/OS Levels
+autoOBOS = input.bool(true, "Auto-Adjust OB/OS Levels", group="Thresholds")
+manualOB = input.int(53, "Manual Overbought", minval=30, maxval=100, group="Thresholds")
+manualOS = input.int(-53, "Manual Oversold", maxval=-30, minval=-100, group="Thresholds")
+
+// Divergence Settings
+regDivEnabled = input.bool(true, "Regular Divergences", group="Divergence")
+hiddenDivEnabled = input.bool(false, "Hidden Divergences", group="Divergence")
+
+// Multi-Timeframe Confirmation
+htfConfirmation = input.bool(true, "HTF Confirmation", group="Confirmation")
+htfPeriod = input.timeframe("4H", "HTF Timeframe", group="Confirmation")
+
+// Risk Management
+atrLength = input.int(14, "ATR Length", minval=5, maxval=20, group="Risk Management")
+riskReward = input.float(2.0, "Risk:Reward Ratio", minval=1.5, maxval=5, step=0.5, group="Risk Management")
+
+// Volume Filter
+volumeFilter = input.bool(true, "Volume Filter", group="Filters")
+minVolumeMult = input.float(1.5, "Min Volume Multiplier", minval=1, maxval=3, step=0.1, group="Filters")
+
+// Machine Learning
+mlEnabled = input.bool(true, "Enable ML Scoring", group="Machine Learning")
+minConfidence = input.int(7, "Min Confidence Score (1-10)", minval=5, maxval=10, group="Machine Learning")
+
+// ================================
+// 2. CORE CALCULATIONS
+// ================================
+
+// Heikin Ashi Conversion
+haTicker = heikinashi(syminfo.tickerid)
+haClose = request.security(haTicker, timeframe.period, close, lookahead=barmerge.lookahead_on)
+haOpen = request.security(haTicker, timeframe.period, open, lookahead=barmerge.lookahead_on)
+haHigh = request.security(haTicker, timeframe.period, high, lookahead=barmerge.lookahead_on)
+haLow = request.security(haTicker, timeframe.period, low, lookahead=barmerge.lookahead_on)
+haHL2 = (haHigh + haLow) / 2
+
+// Dynamic OB/OS Levels
+atr = ta.atr(atrLength)
+volatilityFactor = ta.stdev(haClose, 20) / ta.sma(haClose, 20)
+dynamicOB = autoOBOS ? manualOB + (volatilityFactor * 100) : manualOB
+dynamicOS = autoOBOS ? manualOS - (volatilityFactor * 100) : manualOS
+
+// WaveTrend Calculation
+f_wt(src, chLen, avgLen, maLen) =>
+    esa = ta.ema(src, chLen)
+    de = ta.ema(math.abs(src - esa), chLen)
+    ci = de != 0 ? (src - esa) / (0.015 * de) : 0
+    wt1 = ta.ema(ci, avgLen)
+    wt2 = ta.sma(wt1, maLen)
+    [wt1, wt2]
+
+[wt1, wt2] = f_wt(haHL2, wtChannelLen, wtAverageLen, wtMALen)
+
+// HTF WaveTrend for Confirmation
+[htfWt1, htfWt2] = request.security(haTicker, htfPeriod, f_wt(haHL2, wtChannelLen, wtAverageLen, wtMALen))
+
+// RSI Calculation
+rsiLength = input.int(14, "RSI Length", minval=5, maxval=20, group="RSI")
+rsi = ta.rsi(haClose, rsiLength)
+
+// Volume Analysis
+volSpike = volume > ta.sma(volume, 20) * minVolumeMult
+
+// Trend Strength
+adxLength = input.int(14, "ADX Length", minval=5, maxval=20, group="Trend")
+[diPlus, diMinus, adx] = ta.dmi(adxLength, adxLength)
+trendStrength = adx > 25 ? (diPlus > diMinus ? 1 : -1) * math.round(adx / 10) : 0
+
+// ================================
+// 3. DIVERGENCE DETECTION
+// ================================
+
+// Fractal Detection
+fractalTop = ta.highest(2) == ta.highest(4)
+fractalBot = ta.lowest(2) == ta.lowest(4)
+
+// Regular Bullish Divergence (Price Lower Low, Indicator Higher Low)
+bullishDiv = fractalBot and ta.lowest(haLow, 5)[1] < ta.lowest(haLow, 5)[3] and 
+             ta.lowest(wt2, 5)[1] > ta.lowest(wt2, 5)[3] and wt2 < dynamicOS
+
+// Regular Bearish Divergence (Price Higher High, Indicator Lower High)
+bearishDiv = fractalTop and ta.highest(haHigh, 5)[1] > ta.highest(haHigh, 5)[3] and 
+             ta.highest(wt2, 5)[1] < ta.highest(wt2, 5)[3] and wt2 > dynamicOB
+
+// Hidden Bullish Divergence (Price Higher Low, Indicator Lower Low)
+hiddenBullishDiv = fractalBot and ta.lowest(haLow, 5)[1] > ta.lowest(haLow, 5)[3] and 
+                  ta.lowest(wt2, 5)[1] < ta.lowest(wt2, 5)[3] and wt2 < dynamicOS
+
+// Hidden Bearish Divergence (Price Lower High, Indicator Higher High)
+hiddenBearishDiv = fractalTop and ta.highest(haHigh, 5)[1] < ta.highest(haHigh, 5)[3] and 
+                  ta.highest(wt2, 5)[1] > ta.highest(wt2, 5)[3] and wt2 > dynamicOB
+
+// ================================
+// 4. MACHINE LEARNING SCORING
+// ================================
+
+// Signal Scoring (1-10)
+scoreWT = wt1 > wt2 and ta.crossover(wt1, wt2) ? 3 : 0
+scoreDiv = bullishDiv or bearishDiv ? 2 : 0
+scoreHTF = htfWt1 > htfWt2 ? 1 : 0
+scoreVolume = volSpike ? 1 : 0
+scoreTrend = trendStrength > 0 ? 1 : 0
+scoreRSI = rsi < 30 or rsi > 70 ? 1 : 0
+
+totalScore = scoreWT + scoreDiv + scoreHTF + scoreVolume + scoreTrend + scoreRSI
+
+// ================================
+// 5. TRADE SIGNALS
+// ================================
+
+// Buy Conditions
+buyCondition = (wt1 > wt2) and 
+              (ta.crossover(wt1, wt2)) and 
+              (wt2 < dynamicOS) and 
+              (htfConfirmation ? htfWt1 > htfWt2 : true) and 
+              (volumeFilter ? volSpike : true) and 
+              (mlEnabled ? totalScore >= minConfidence : true)
+
+// Sell Conditions
+sellCondition = (wt1 < wt2) and 
+               (ta.crossunder(wt1, wt2)) and 
+               (wt2 > dynamicOB) and 
+               (htfConfirmation ? htfWt1 < htfWt2 : true) and 
+               (volumeFilter ? volSpike : true) and 
+               (mlEnabled ? totalScore >= minConfidence : true)
+
+// ================================
+// 6. RISK MANAGEMENT
+// ================================
+
+// ATR-based Stop Loss and Take Profit
+stopLoss = atr * 1.5
+takeProfit = atr * (riskReward * 1.5)
+
+// Position Sizing
+equity = input.float(10000, "Account Size", minval=1000, step=1000)
+riskPercent = input.float(1, "Risk % per Trade", minval=0.5, maxval=5, step=0.5) / 100
+positionSize = (equity * riskPercent) / (stopLoss / syminfo.mintick)
+
+// ================================
+// 7. VISUALIZATION
+// ================================
+
+// Colors
+bgColor = darkMode ? color.new(#121826, 0) : color.new(#f5f5f5, 0)
+bullColor = color.new(#4CAF50, 0)
+bearColor = color.new(#F44336, 0)
+textColor = darkMode ? color.white : color.black
+
+// Background
+bgcolor(bgColor)
+
+// WaveTrend Plots
+plot(wtShow ? wt1 : na, "WT1", color.new(#2196F3, 0), 2, plot.style_line)
+plot(wtShow ? wt2 : na, "WT2", color.new(#9C27B0, 0), 2, plot.style_line)
+
+// OB/OS Levels
+hline(dynamicOB, "Overbought", color.new(#FF5252, 50), hline.style_solid)
+hline(dynamicOS, "Oversold", color.new(#4CAF50, 50), hline.style_solid)
+
+// Signals
+plotshape(buyCondition, "Buy", shape.triangleup, location.bottom, bullColor, size=size.small)
+plotshape(sellCondition, "Sell", shape.triangledown, location.top, bearColor, size=size.small)
+
+// Divergences
+plotshape(regDivEnabled and bullishDiv, "Bull Div", shape.labelup, location.bottom, bullColor, text="D", textcolor=color.white)
+plotshape(regDivEnabled and bearishDiv, "Bear Div", shape.labeldown, location.top, bearColor, text="D", textcolor=color.white)
+plotshape(hiddenDivEnabled and hiddenBullishDiv, "H Bull Div", shape.labelup, location.bottom, color.new(bullColor, 50), text="HD")
+plotshape(hiddenDivEnabled and hiddenBearishDiv, "H Bear Div", shape.labeldown, location.top, color.new(bearColor, 50), text="HD")
+
+// Confidence Meter
+plotchar(mlEnabled ? totalScore : na, "Confidence", "", location.top, color=totalScore >= 8 ? bullColor : totalScore >= 6 ? color.orange : bearColor, size=size.tiny)
+
+// ================================
+// 8. ALERTS
+// ================================
+
+alertcondition(buyCondition, "Buy Signal", "VMC Pro++ Buy: WT Crossover + Divergence")
+alertcondition(sellCondition, "Sell Signal", "VMC Pro++ Sell: WT Crossunder + Divergence")
